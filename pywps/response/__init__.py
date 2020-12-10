@@ -1,3 +1,8 @@
+from abc import abstractmethod
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from pywps import WPSRequest
+
 from pywps.dblog import store_status
 from pywps.response.status import WPS_STATUS
 from pywps.translations import get_translation
@@ -27,7 +32,7 @@ def get_response(operation):
 
 class WPSResponse(object):
 
-    def __init__(self, wps_request, uuid=None, version="1.0.0"):
+    def __init__(self, wps_request: 'WPSRequest', uuid=None, version="1.0.0"):
 
         self.wps_request = wps_request
         self.uuid = uuid
@@ -35,6 +40,7 @@ class WPSResponse(object):
         self.status = WPS_STATUS.ACCEPTED
         self.status_percentage = 0
         self.doc = None
+        self.content_type = None
         self.version = version
         self.template_env = RelEnvironment(
             loader=PackageLoader('pywps', 'templates'),
@@ -57,9 +63,13 @@ class WPSResponse(object):
         self.status_percentage = status_percentage
         store_status(self.uuid, self.status, self.message, self.status_percentage)
 
+    @abstractmethod
+    def _construct_doc(self):
+        ...
+
     def get_response_doc(self):
         try:
-            self.doc = self._construct_doc()
+            self.doc, self.content_type = self._construct_doc()
         except Exception as e:
             if hasattr(e, "description"):
                 msg = e.description
@@ -71,4 +81,4 @@ class WPSResponse(object):
         else:
             self._update_status(WPS_STATUS.SUCCEEDED, "Response generated", 100)
 
-            return self.doc
+            return self.doc, self.content_type

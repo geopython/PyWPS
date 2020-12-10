@@ -11,7 +11,10 @@ Based on OGC OWS, WPS and
 http://lists.opengeospatial.org/pipermail/wps-dev/2013-October/000335.html
 """
 
+import json
 
+from werkzeug.datastructures import MIMEAccept
+from werkzeug.http import parse_accept_header
 from werkzeug.wrappers import Response
 from werkzeug.exceptions import HTTPException
 from werkzeug.utils import escape
@@ -19,6 +22,7 @@ from werkzeug.utils import escape
 import logging
 
 from pywps import __version__
+from pywps.app.basic import get_json_indent, get_response_type, parse_http_url
 
 __author__ = "Alex Morega & Calin Ciociu"
 
@@ -53,7 +57,7 @@ class NoApplicableCode(HTTPException):
     def get_description(self, environ=None):
         """Get the description."""
         if self.description:
-            return '''<ows:ExceptionText>{}</ows:ExceptionText>'''.format(escape(self.description))
+            return '{}'.format(escape(self.description))
         else:
             return ''
 
@@ -65,17 +69,26 @@ class NoApplicableCode(HTTPException):
             'name': escape(self.name),
             'description': self.get_description(environ)
         }
-        doc = str((
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<!-- PyWPS {version} -->\n'
-            '<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/ows/1.1 http://schemas.opengis.net/ows/1.1.0/owsExceptionReport.xsd" version="1.0.0">\n'  # noqa
-            '  <ows:Exception exceptionCode="{name}" locator="{locator}" >\n'
-            '      {description}\n'
-            '  </ows:Exception>\n'
-            '</ows:ExceptionReport>'
-        ).format(**args))
+        accept_mimetypes = parse_accept_header(environ.get("HTTP_ACCEPT"), MIMEAccept)
+        request = environ.get('werkzeug.request', None)
+        default_mimetype = None if not request else request.args.get('f', None)
+        if default_mimetype is None:
+            default_mimetype = parse_http_url(request).get('default_mimetype')
+        json_response, mimetype = get_response_type(accept_mimetypes, default_mimetype)
+        if json_response:
+            doc = json.dumps(args, indent=get_json_indent())
+        else:
+            doc = str((
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<!-- PyWPS {version} -->\n'
+                '<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.opengis.net/ows/1.1 http://schemas.opengis.net/ows/1.1.0/owsExceptionReport.xsd" version="1.0.0">\n'  # noqa
+                '  <ows:Exception exceptionCode="{name}" locator="{locator}" >\n'
+                '      <ows:ExceptionText>{description}</ows:ExceptionText>\n'
+                '  </ows:Exception>\n'
+                '</ows:ExceptionReport>'
+            ).format(**args))
 
-        return Response(doc, self.code, mimetype='text/xml')
+        return Response(doc, self.code, mimetype=mimetype)
 
 
 class InvalidParameterValue(NoApplicableCode):

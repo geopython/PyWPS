@@ -5,6 +5,7 @@
 """
 WPS Output classes
 """
+from typing import Optional, Sequence, Dict, Union
 
 import lxml.etree as etree
 import os
@@ -12,9 +13,10 @@ from pywps.app.Common import Metadata
 from pywps.exceptions import InvalidParameterValue
 from pywps.inout import basic
 from pywps.inout.storage.file import FileStorageBuilder
+from pywps.inout.types import Translations
 from pywps.validator.mode import MODE
 from pywps import configuration as config
-from pywps.inout.formats import Format
+from pywps.inout.formats import Format, Supported_Formats
 
 
 class BoundingBoxOutput(basic.BBoxOutput):
@@ -108,9 +110,10 @@ class ComplexOutput(basic.ComplexOutput):
         e.g. {"fr-CA": {"title": "Mon titre", "abstract": "Une description"}}
     """
 
-    def __init__(self, identifier, title, supported_formats=None,
-                 data_format=None, abstract='', keywords=[], workdir=None, metadata=None,
-                 as_reference=False, mode=MODE.NONE, translations=None):
+    def __init__(self, identifier: str, title: str, supported_formats: Supported_Formats = None,
+                 data_format=None, abstract: str = '', keywords=[], workdir=None,
+                 metadata: Optional[Sequence[Metadata]] = None,
+                 as_reference=False, mode: MODE = MODE.NONE, translations: Translations = None):
         if metadata is None:
             metadata = []
 
@@ -512,13 +515,14 @@ class MetaLink4(MetaLink):
 
 
 def output_from_json(json_data):
-    if json_data['type'] == 'complex':
+    data_type = json_data.get('type', 'literal')
+    if data_type == 'complex':
         output = ComplexOutput.from_json(json_data)
-    elif json_data['type'] == 'literal':
+    elif data_type == 'literal':
         output = LiteralOutput.from_json(json_data)
-    elif json_data['type'] == 'bbox':
+    elif data_type == 'bbox':
         output = BoundingBoxOutput.from_json(json_data)
     else:
-        raise InvalidParameterValue("Output type not recognized: {}".format(json_data['type']))
+        raise InvalidParameterValue("Output type not recognized: {}".format(data_type))
 
     return output

@@ -186,6 +186,14 @@ class ComplexInput(basic.ComplexInput):
 
     @classmethod
     def from_json(cls, json_input):
+        data_format = json_input.get('data_format')
+        if data_format is not None:
+            data_format = Format(
+                schema=data_format.get('schema'),
+                extension=data_format.get('extension'),
+                mime_type=data_format.get('mime_type', ""),
+                encoding=data_format.get('encoding')
+            )
         instance = cls(
             identifier=json_input['identifier'],
             title=json_input.get('title'),
@@ -193,19 +201,14 @@ class ComplexInput(basic.ComplexInput):
             keywords=json_input.get('keywords', []),
             workdir=json_input.get('workdir'),
             metadata=[Metadata.from_json(data) for data in json_input.get('metadata', [])],
-            data_format=Format(
-                schema=json_input['data_format'].get('schema'),
-                extension=json_input['data_format'].get('extension'),
-                mime_type=json_input['data_format']['mime_type'],
-                encoding=json_input['data_format'].get('encoding')
-            ),
+            data_format=data_format,
             supported_formats=[
                 Format(
                     schema=infrmt.get('schema'),
                     extension=infrmt.get('extension'),
-                    mime_type=infrmt['mime_type'],
+                    mime_type=infrmt.get('mime_type'),
                     encoding=infrmt.get('encoding')
-                ) for infrmt in json_input['supported_formats']
+                ) for infrmt in json_input.get('supported_formats', [])
             ],
             mode=json_input.get('mode', MODE.NONE),
             translations=json_input.get('translations'),
@@ -331,7 +334,7 @@ class LiteralInput(basic.LiteralInput):
     @classmethod
     def from_json(cls, json_input):
         allowed_values = []
-        for allowed_value in json_input['allowed_values']:
+        for allowed_value in json_input.get('allowed_values', []):
             if allowed_value['type'] == 'anyvalue':
                 allowed_values.append(AnyValue())
             elif allowed_value['type'] == 'novalue':
@@ -351,7 +354,7 @@ class LiteralInput(basic.LiteralInput):
         data = json_input_copy.pop('data', None)
         uom = json_input_copy.pop('uom', None)
         metadata = json_input_copy.pop('metadata', [])
-        json_input_copy.pop('type')
+        json_input_copy.pop('type', None)
         json_input_copy.pop('any_value', None)
         json_input_copy.pop('values_reference', None)
 
@@ -371,8 +374,8 @@ class LiteralInput(basic.LiteralInput):
 
 
 def input_from_json(json_data):
-    data_type = json_data['type']
-    if data_type == 'complex':
+    data_type = json_data.get('type', 'literal')
+    if data_type in ['complex', 'reference']:
         inpt = ComplexInput.from_json(json_data)
     elif data_type == 'literal':
         inpt = LiteralInput.from_json(json_data)

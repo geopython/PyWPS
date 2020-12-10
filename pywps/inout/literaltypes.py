@@ -5,7 +5,6 @@
 
 """Literaltypes are used for LiteralInputs, to make sure, input data are OK
 """
-
 from urllib.parse import urlparse
 from dateutil.parser import parse as date_parser
 import datetime
@@ -19,7 +18,7 @@ LOGGER = logging.getLogger('PYWPS')
 LITERAL_DATA_TYPES = ('float', 'boolean', 'integer', 'string',
                       'positiveInteger', 'anyURI', 'time', 'date', 'dateTime',
                       'scale', 'angle',
-                      'nonNegativeInteger')
+                      'nonNegativeInteger', None)
 
 # currently we are supporting just ^^^ data types, feel free to add support for
 # more

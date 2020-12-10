@@ -3,14 +3,17 @@
 # licensed under MIT, Please consult LICENSE.txt for details     #
 ##################################################################
 
+import json
 import logging
 import time
 from werkzeug.wrappers import Request
 from pywps import get_ElementMakerForVersion
+from pywps.app.basic import get_response_type, get_json_indent, get_default_response_mimetype
 from pywps.exceptions import NoApplicableCode
 import pywps.configuration as config
 from werkzeug.wrappers import Response
 
+from pywps.inout.numpy_array_encode import NumpyArrayEncoder
 from pywps.response.status import WPS_STATUS
 from pywps.response import WPSResponse
 from pywps.inout.formats import FORMATS
@@ -77,7 +80,7 @@ class ExecuteResponse(WPSResponse):
     def _update_status_doc(self):
         try:
             # rebuild the doc
-            self.doc = self._construct_doc()
+            self.doc, self.content_type = self._construct_doc()
         except Exception as e:
             raise NoApplicableCode('Building Response Document failed with : {}'.format(e))
 
@@ -187,13 +190,37 @@ class ExecuteResponse(WPSResponse):
                 data["output_definitions"] = [self.outputs[o].json for o in self.outputs]
         return data
 
+    @staticmethod
+    def _render_json_response(jdoc):
+        response = dict()
+        response['status'] = jdoc['status']
+        out = jdoc['process']['outputs']
+        response['outputs'] = {val['identifier']: val['data'] for val in out if ('identifier' in val and 'data' in val)}
+        return response
+
     def _construct_doc(self):
-        template = self.template_env.get_template(self.version + '/execute/main.xml')
-        doc = template.render(**self.json)
-        return doc
+        if self.status == WPS_STATUS.SUCCEEDED and \
+                hasattr(self.wps_request, 'preprocess_response') and \
+                self.wps_request.preprocess_response:
+            self.outputs = self.wps_request.preprocess_response(self.outputs)
+        doc = self.json
+        try:
+            json_response, mimetype = get_response_type(
+                self.wps_request.http_request.accept_mimetypes, self.wps_request.default_mimetype)
+        except Exception:
+            mimetype = get_default_response_mimetype()
+            json_response = 'json' in mimetype
+        if json_response:
+            doc = json.dumps(self._render_json_response(doc), cls=NumpyArrayEncoder, indent=get_json_indent())
+        else:
+            template = self.template_env.get_template(self.version + '/execute/main.xml')
+            doc = template.render(**doc)
+        return doc, mimetype
 
     @Request.application
     def __call__(self, request):
+        accept_json_response, accepted_mimetype = get_response_type(
+            self.wps_request.http_request.accept_mimetypes, self.wps_request.default_mimetype)
         if self.wps_request.raw:
             if self.status == WPS_STATUS.FAILED:
                 return NoApplicableCode(self.message)
@@ -202,9 +229,25 @@ class ExecuteResponse(WPSResponse):
                 wps_output_value = self.outputs[wps_output_identifier]
                 if wps_output_value.source_type is None:
                     return NoApplicableCode("Expected output was not generated")
-                return Response(wps_output_value.data,
-                                mimetype=wps_output_value.data_format.mime_type)
+                response = wps_output_value.data
+                if hasattr(wps_output_value, 'data_format'):
+                    mimetype = wps_output_value.data_format.mime_type
+                else:
+                    # like LitearlOutput
+                    mimetype = self.wps_request.outputs[wps_output_identifier].get('mimetype', None)
+                if not isinstance(response, (str, bytes, bytearray)):
+                    if not mimetype:
+                        mimetype = accepted_mimetype
+                    json_response = mimetype and 'json' in mimetype
+                    if json_response:
+                        mimetype = 'application/json'
+                        response = json.dumps(response, cls=NumpyArrayEncoder, indent=get_json_indent())
+                    else:
+                        response = str(response)
+                if not mimetype:
+                    mimetype = None
+                return Response(response, mimetype=mimetype)
         else:
             if not self.doc:
                 return NoApplicableCode("Output was not generated")
-            return Response(self.doc, mimetype='text/xml')
+            return Response(self.doc, mimetype=accepted_mimetype)
