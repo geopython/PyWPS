@@ -101,10 +101,8 @@ class WPSRequest(object):
             raise FileSizeExceeded('File size for input exceeded.'
                                    ' Maximum request size allowed: {} megabytes'.format(maxsize / 1024 / 1024))
 
-        mimetype = \
-            self.http_request.mimetype if self.http_request.mimetype is not None \
-            else self.http_request.content_type
-        json_input = 'json' in mimetype
+        content_type = self.http_request.content_type # or self.http_request.mimetype
+        json_input = 'json' in content_type
         if not json_input:
             try:
                 doc = lxml.etree.fromstring(self.http_request.get_data())

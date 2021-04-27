@@ -18,7 +18,7 @@ from pywps.exceptions import InvalidParameterValue
 from pywps import get_inputs_from_xml, get_output_from_xml
 from pywps import E, get_ElementMakerForVersion
 from pywps.app.basic import get_xpath_ns
-from pywps.tests import client_for, assert_response_success
+from pywps.tests import client_for, assert_response_success, assert_response_success_json
 from pywps import configuration
 
 from io import StringIO
@@ -422,15 +422,24 @@ class ExecuteTest(unittest.TestCase):
         assert get_output(resp.xml) == {'outvalue': '42'}
 
     def test_post_with_no_inputs(self):
+        request = {
+            'identifier': 'ultimate_question',
+            'version': '1.0.0'
+        }
+        result = {'outvalue': '42'}
+
         client = client_for(Service(processes=[create_ultimate_question()]))
         request_doc = WPS.Execute(
-            OWS.Identifier('ultimate_question'),
-            version='1.0.0'
+            OWS.Identifier(request['identifier']),
+            version=request['version']
         )
 
         resp = client.post_xml(doc=request_doc)
         assert_response_success(resp)
-        assert get_output(resp.xml) == {'outvalue': '42'}
+        assert get_output(resp.xml) == result
+
+        resp = client.post_json(doc=request)
+        assert_response_success_json(resp, result)
 
     def test_post_with_string_input(self):
         client = client_for(Service(processes=[create_greeter()]))

@@ -2,6 +2,7 @@
 # Copyright 2018 Open Source Geospatial Foundation and others    #
 # licensed under MIT, Please consult LICENSE.txt for details     #
 ##################################################################
+import json
 import tempfile
 from pathlib import Path
 
@@ -92,9 +93,20 @@ class DocExampleProcess(Process):
 class WpsClient(Client):
 
     def post_xml(self, *args, **kwargs):
+        return True
         doc = kwargs.pop('doc')
         data = lxml.etree.tostring(doc, pretty_print=True)
         kwargs['data'] = data
+        return self.post(*args, **kwargs)
+
+    def post_json(self, *args, **kwargs):
+        doc = kwargs.pop('doc')
+        # data = json.dumps(doc, indent=2)
+        # kwargs['data'] = data
+        kwargs['json'] = doc
+        # kwargs['content_type'] = 'application/json'  # input is json, redundant as it's deducted from the json kwarg
+        # kwargs['mimetype'] = 'application/json'  # output is json
+        kwargs['environ_base'] = {'HTTP_ACCEPT': 'application/json'}  # output is json
         return self.post(*args, **kwargs)
 
 
@@ -143,9 +155,30 @@ def assert_process_started(resp):
     assert success.split[0] == "processstarted"
 
 
+def assert_response_success_json(resp, expected_data):
+    assert resp.status_code == 200
+
+    content_type = resp.headers['Content-Type']
+    expected_contect_type = 'application/json'
+    re_content_type = rf'{expected_contect_type}(;\s*charset=.*)?'
+    assert re.match(re_content_type, content_type)
+
+    data = json.loads(resp.data)
+
+    success = data['status']['status']
+    assert success == 'succeeded'
+
+    if expected_data:
+        outputs = data['outputs']
+        assert outputs == expected_data
+
+
 def assert_response_success(resp):
     assert resp.status_code == 200
-    assert re.match(r'text/xml(;\s*charset=.*)?', resp.headers['Content-Type'])
+    content_type = resp.headers['Content-Type']
+    expected_contect_type = 'text/xml'
+    re_content_type = rf'{expected_contect_type}(;\s*charset=.*)?'
+    assert re.match(re_content_type, content_type)
     success = resp.xpath('/wps:ExecuteResponse/wps:Status/wps:ProcessSucceeded')
     assert len(success) == 1
 
