@@ -15,7 +15,6 @@ from pywps import configuration
 import pywps.processing
 from pywps.processing.job import Job
 from pywps.processing.basic import MultiProcessing
-from pywps import Process
 from pywps.app import WPSRequest
 from pywps.response.execute import ExecuteResponse
 

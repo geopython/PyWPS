@@ -13,7 +13,7 @@
 
 from collections import namedtuple
 import mimetypes
-
+from typing import Optional, Sequence, Union
 
 _FORMATS = namedtuple('FORMATS', 'GEOJSON, JSON, SHP, GML, GPX, METALINK, META4, KML, KMZ, GEOTIFF,'
                                  'WCS, WCS100, WCS110, WCS20, WFS, WFS100,'
@@ -160,6 +160,9 @@ class Format(object):
         self.encoding = jsonin['encoding']
         self.schema = jsonin['schema']
         self.extension = jsonin['extension']
+
+
+Supported_Formats = Optional[Sequence[Union[str, Format]]]
 
 
 FORMATS = _FORMATS(

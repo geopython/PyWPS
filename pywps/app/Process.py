@@ -252,7 +252,7 @@ class Process(object):
             if wps_response.status != WPS_STATUS.SUCCEEDED and wps_response.status != WPS_STATUS.FAILED:
                 # if (not wps_response.status_percentage) or (wps_response.status_percentage != 100):
                 LOGGER.debug('Updating process status to 100% if everything went correctly')
-                wps_response._update_status(WPS_STATUS.SUCCEEDED, 'PyWPS Process {} finished'.format(self.title), 100)
+                wps_response._update_status(WPS_STATUS.SUCCEEDED, f'PyWPS Process {self.title} finished', 100)
         except Exception as e:
             traceback.print_exc()
             LOGGER.debug('Retrieving file and line number where exception occurred')

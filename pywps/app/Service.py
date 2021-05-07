@@ -5,6 +5,8 @@
 
 import logging
 import tempfile
+from typing import Sequence, Optional, Dict
+
 from werkzeug.exceptions import HTTPException
 from werkzeug.wrappers import Request, Response
 from urllib.parse import urlparse
@@ -39,9 +41,10 @@ class Service(object):
     :param cfgfiles: A list of configuration files
     """
 
-    def __init__(self, processes=[], cfgfiles=None):
+    def __init__(self, processes: Sequence = [], cfgfiles=None, preprocessors: Optional[Dict] = None):
         # ordered dict of processes
         self.processes = OrderedDict((p.identifier, p) for p in processes)
+        self.preprocessors = preprocessors or dict()
 
         if cfgfiles:
             config.load_configuration(cfgfiles)
@@ -85,7 +88,7 @@ class Service(object):
             process = self.processes[identifier]
         except KeyError:
             raise InvalidParameterValue("Unknown process '{}'".format(identifier), 'Identifier')
-        # make deep copy of the process instace
+        # make deep copy of the process instance
         # so that processes are not overriding each other
         # just for execute
         process = copy.deepcopy(process)
@@ -281,7 +284,7 @@ class Service(object):
                 LOGGER.debug('Setting PYWPS_CFG to {}'.format(environ_cfg))
                 os.environ['PYWPS_CFG'] = environ_cfg
 
-            wps_request = WPSRequest(http_request)
+            wps_request = WPSRequest(http_request, self.preprocessors)
             LOGGER.info('Request: {}'.format(wps_request.operation))
             if wps_request.operation in ['getcapabilities',
                                          'describeprocess',

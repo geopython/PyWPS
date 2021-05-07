@@ -4,6 +4,8 @@
 ##################################################################
 from pathlib import PurePath
 
+from pywps.inout.formats import Supported_Formats
+from pywps.inout.types import Translations
 from pywps.translations import lower_case_dict
 from io import StringIO
 import os
@@ -203,11 +205,12 @@ class IOHandler(object):
         """
 
         validate = self.validator
-        _valid = validate(self, self.valid_mode)
-        if not _valid:
-            self.data_set = False
-            raise InvalidParameterValue('Input data not valid using '
-                                        'mode {}'.format(self.valid_mode))
+        if validate is not None:
+            _valid = validate(self, self.valid_mode)
+            if not _valid:
+                self.data_set = False
+                raise InvalidParameterValue('Input data not valid using '
+                                            'mode {}'.format(self.valid_mode))
         self.data_set = True
 
     @property
@@ -644,7 +647,7 @@ class BasicIO:
         self.abstract = abstract
         self.keywords = keywords
         self.min_occurs = int(min_occurs)
-        self.max_occurs = int(max_occurs)
+        self.max_occurs = int(max_occurs) if max_occurs is not None else None
         self.metadata = metadata
         self.translations = lower_case_dict(translations)
 
@@ -715,7 +718,7 @@ class BasicComplex(object):
     def validator(self):
         """Return the proper validator for given data_format
         """
-        return self.data_format.validate
+        return None if self.data_format is None else self.data_format.validate
 
     @property
     def supported_formats(self):
@@ -1071,8 +1074,8 @@ class ComplexOutput(BasicIO, BasicComplex, IOHandler):
     """
 
     def __init__(self, identifier, title=None, abstract=None, keywords=None,
-                 workdir=None, data_format=None, supported_formats=None,
-                 mode=MODE.NONE, translations=None):
+                 workdir=None, data_format=None, supported_formats: Supported_Formats = None,
+                 mode=MODE.NONE, translations: Translations = None):
         BasicIO.__init__(self, identifier, title, abstract, keywords, translations=translations)
         IOHandler.__init__(self, workdir=workdir, mode=mode)
         BasicComplex.__init__(self, data_format, supported_formats)

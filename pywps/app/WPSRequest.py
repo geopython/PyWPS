@@ -10,26 +10,30 @@ from werkzeug.exceptions import MethodNotAllowed
 from pywps import get_ElementMakerForVersion
 import base64
 import datetime
-from pywps.app.basic import get_xpath_ns
+from pywps.app.basic import get_xpath_ns, parse_http_url
 from pywps.inout.inputs import input_from_json
 from pywps.exceptions import NoApplicableCode, OperationNotSupported, MissingParameterValue, VersionNegotiationFailed, \
     InvalidParameterValue, FileSizeExceeded
 from pywps import configuration
+from pywps.configuration import wps_strict
 from pywps import get_version_from_ns
 
 import json
 from urllib.parse import unquote
 
 LOGGER = logging.getLogger("PYWPS")
+default_version = '1.0.0'
 
 
 class WPSRequest(object):
 
-    def __init__(self, http_request=None):
+    def __init__(self, http_request=None, preprocessors=None):
         self.http_request = http_request
 
         self.operation = None
         self.version = None
+        self.api = None
+        self.default_mimetype = None
         self.language = None
         self.identifier = None
         self.identifiers = None
@@ -37,13 +41,23 @@ class WPSRequest(object):
         self.status = None
         self.lineage = None
         self.inputs = {}
+        self.output_ids = None
         self.outputs = {}
         self.raw = None
         self.WPS = None
         self.OWS = None
         self.xpath_ns = None
+        self.preprocessors = preprocessors or dict()
+        self.preprocess_request = None
+        self.preprocess_response = None
 
-        if self.http_request:
+        if http_request:
+            d = parse_http_url(http_request)
+            self.operation = d.get('operation')
+            self.identifier = d.get('identifier')
+            self.output_ids = d.get('output_ids')
+            self.api = d.get('api')
+            self.default_mimetype = d.get('default_mimetype')
             request_parser = self._get_request_parser_method(http_request.method)
             request_parser()
 
@@ -61,7 +75,7 @@ class WPSRequest(object):
         """
 
         # service shall be WPS
-        service = _get_get_param(self.http_request, 'service')
+        service = _get_get_param(self.http_request, 'service', None if wps_strict else 'wps')
         if service:
             if str(service).lower() != 'wps':
                 raise InvalidParameterValue(
@@ -69,9 +83,12 @@ class WPSRequest(object):
         else:
             raise MissingParameterValue('service', 'service')
 
-        operation = _get_get_param(self.http_request, 'request')
+        self.operation = _get_get_param(self.http_request, 'request', self.operation)
 
-        request_parser = self._get_request_parser(operation)
+        language = _get_get_param(self.http_request, 'language')
+        self.check_and_set_language(language)
+
+        request_parser = self._get_request_parser(self.operation)
         request_parser(self.http_request)
 
     def _post_request(self):
@@ -84,16 +101,57 @@ class WPSRequest(object):
             raise FileSizeExceeded('File size for input exceeded.'
                                    ' Maximum request size allowed: {} megabytes'.format(maxsize / 1024 / 1024))
 
-        try:
-            doc = lxml.etree.fromstring(self.http_request.get_data())
-        except Exception as e:
-            raise NoApplicableCode(e.msg)
+        content_type = self.http_request.content_type # or self.http_request.mimetype
+        json_input = 'json' in content_type
+        if not json_input:
+            try:
+                doc = lxml.etree.fromstring(self.http_request.get_data())
+            except Exception as e:
+                raise NoApplicableCode(e.msg)
+            operation = doc.tag
+            version = get_version_from_ns(doc.nsmap[doc.prefix])
+            self.set_version(version)
 
-        operation = doc.tag
-        version = get_version_from_ns(doc.nsmap[doc.prefix])
-        self.set_version(version)
-        request_parser = self._post_request_parser(operation)
-        request_parser(doc)
+            language = doc.attrib.get('language')
+            self.check_and_set_language(language)
+
+            request_parser = self._post_request_parser(operation)
+            request_parser(doc)
+        else:
+            try:
+                jdoc = json.loads(self.http_request.get_data())
+            except Exception as e:
+                raise NoApplicableCode(e.msg)
+            if self.identifier is not None:
+                jdoc = {'inputs': jdoc}
+            else:
+                self.identifier = jdoc.get('identifier', None)
+
+            self.operation = jdoc.get('operation', self.operation)
+
+            preprocessor_tuple = self.preprocessors.get(self.identifier, None)
+            if preprocessor_tuple:
+                self.identifier = preprocessor_tuple[0]
+                self.preprocess_request = preprocessor_tuple[1]
+                self.preprocess_response = preprocessor_tuple[2]
+
+            jdoc['operation'] = self.operation
+            jdoc['identifier'] = self.identifier
+            jdoc['api'] = self.api
+            jdoc['default_mimetype'] = self.default_mimetype
+
+            if self.preprocess_request is not None:
+                jdoc = self.preprocess_request(jdoc)
+            self.json = jdoc
+
+            version = jdoc.get('version')
+            self.set_version(version)
+
+            language = jdoc.get('language')
+            self.check_and_set_language(language)
+
+            request_parser = self._post_json_request_parser()
+            request_parser(jdoc)
 
     def _get_request_parser(self, operation):
         """Factory function returing propper parsing function
@@ -108,20 +166,16 @@ class WPSRequest(object):
             acceptedversions = _get_get_param(http_request, 'acceptversions')
             wpsrequest.check_accepted_versions(acceptedversions)
 
-            language = _get_get_param(http_request, 'language')
-            wpsrequest.check_and_set_language(language)
-
         def parse_get_describeprocess(http_request):
             """Parse GET DescribeProcess request
             """
             version = _get_get_param(http_request, 'version')
             wpsrequest.check_and_set_version(version)
 
-            language = _get_get_param(http_request, 'language')
-            wpsrequest.check_and_set_language(language)
-
             wpsrequest.identifiers = _get_get_param(
-                http_request, 'identifier', aslist=True)
+                http_request, 'identifier', wpsrequest.identifiers, aslist=True)
+            if wpsrequest.identifiers is None and self.identifier is not None:
+                wpsrequest.identifiers = [wpsrequest.identifier]
 
         def parse_get_execute(http_request):
             """Parse GET Execute request
@@ -129,10 +183,7 @@ class WPSRequest(object):
             version = _get_get_param(http_request, 'version')
             wpsrequest.check_and_set_version(version)
 
-            language = _get_get_param(http_request, 'language')
-            wpsrequest.check_and_set_language(language)
-
-            wpsrequest.identifier = _get_get_param(http_request, 'identifier')
+            wpsrequest.identifier = _get_get_param(http_request, 'identifier', wpsrequest.identifier)
             wpsrequest.store_execute = _get_get_param(
                 http_request, 'storeExecuteResponse', 'false')
             wpsrequest.status = _get_get_param(http_request, 'status', 'false')
@@ -143,28 +194,29 @@ class WPSRequest(object):
             if self.inputs is None:
                 self.inputs = {}
 
-            wpsrequest.outputs = {}
-
             # take responseDocument preferably
-            resp_outputs = get_data_from_kvp(
-                _get_get_param(http_request, 'ResponseDocument'))
-            raw_outputs = get_data_from_kvp(
-                _get_get_param(http_request, 'RawDataOutput'))
-            wpsrequest.raw = False
-            if resp_outputs:
-                wpsrequest.outputs = resp_outputs
-            elif raw_outputs:
-                wpsrequest.outputs = raw_outputs
-                wpsrequest.raw = True
+            raw, output_ids = False, _get_get_param(http_request, 'ResponseDocument')
+            if output_ids is None:
+                raw, output_ids = True, _get_get_param(http_request, 'RawDataOutput')
+            if output_ids is not None:
+                wpsrequest.raw, wpsrequest.output_ids = raw, output_ids
+            elif wpsrequest.raw is None:
+                wpsrequest.raw = wpsrequest.output_ids is not None
+
+            wpsrequest.default_mimetype = _get_get_param(http_request, 'f', wpsrequest.default_mimetype)
+            wpsrequest.outputs = get_data_from_kvp(wpsrequest.output_ids) or {}
+            if wpsrequest.raw:
                 # executeResponse XML will not be stored and no updating of
                 # status
                 wpsrequest.store_execute = 'false'
                 wpsrequest.status = 'false'
 
-        if not operation:
-            raise MissingParameterValue('Missing request value', 'request')
-        else:
+        if operation:
             self.operation = operation.lower()
+        else:
+            if wps_strict:
+                raise MissingParameterValue('Missing request value', 'request')
+            self.operation = 'execute'
 
         if self.operation == 'getcapabilities':
             return parse_get_getcapabilities
@@ -191,18 +243,12 @@ class WPSRequest(object):
                 [v.text for v in acceptedversions])
             wpsrequest.check_accepted_versions(acceptedversions)
 
-            language = doc.attrib.get('language')
-            wpsrequest.check_and_set_language(language)
-
         def parse_post_describeprocess(doc):
             """Parse POST DescribeProcess request
             """
 
             version = doc.attrib.get('version')
             wpsrequest.check_and_set_version(version)
-
-            language = doc.attrib.get('language')
-            wpsrequest.check_and_set_language(language)
 
             wpsrequest.operation = 'describeprocess'
             wpsrequest.identifiers = [identifier_el.text for identifier_el in
@@ -213,9 +259,6 @@ class WPSRequest(object):
             """
             version = doc.attrib.get('version')
             wpsrequest.check_and_set_version(version)
-
-            language = doc.attrib.get('language')
-            wpsrequest.check_and_set_language(language)
 
             wpsrequest.operation = 'execute'
 
@@ -261,6 +304,68 @@ class WPSRequest(object):
             raise InvalidParameterValue(
                 'Unknown request {}'.format(tagname), 'request')
 
+    def _post_json_request_parser(self):
+        """Factory function returing propper parsing function
+        """
+
+        wpsrequest = self
+
+        def parse_json_post_getcapabilities(jdoc):
+            """Parse POST GetCapabilities request
+            """
+            acceptedversions = jdoc.get('acceptedversions')
+            wpsrequest.check_accepted_versions(acceptedversions)
+
+        def parse_json_post_describeprocess(jdoc):
+            """Parse POST DescribeProcess request
+            """
+
+            version = jdoc.get('version')
+            wpsrequest.check_and_set_version(version)
+            wpsrequest.identifiers = [identifier_el.text for identifier_el in
+                                      self.xpath_ns(jdoc, './ows:Identifier')]
+
+        def parse_json_post_execute(jdoc):
+            """Parse POST Execute request
+            """
+            version = jdoc.get('version')
+            wpsrequest.check_and_set_version(version)
+
+            wpsrequest.identifier = jdoc.get('identifier')
+            if wpsrequest.identifier is None:
+                raise MissingParameterValue(
+                    'Process identifier not set', 'Identifier')
+
+            wpsrequest.lineage = 'false'
+            wpsrequest.store_execute = 'false'
+            wpsrequest.status = 'false'
+            wpsrequest.inputs = get_inputs_from_json(jdoc)
+
+            if wpsrequest.output_ids is None:
+                wpsrequest.output_ids = jdoc.get('outputs', {})
+                wpsrequest.raw = jdoc.get('raw', False)
+            wpsrequest.raw, wpsrequest.outputs = get_output_from_dict(wpsrequest.output_ids, wpsrequest.raw)
+
+            if wpsrequest.raw:
+                # executeResponse XML will not be stored
+                wpsrequest.store_execute = 'false'
+
+            # todo: parse response_document like in the xml version?
+
+        if self.operation is None:
+            self.operation = 'execute'
+        else:
+            self.operation = self.operation.lower()
+        if self.operation == 'getcapabilities':
+            return parse_json_post_getcapabilities
+        elif self.operation == 'describeprocess':
+            return parse_json_post_describeprocess
+        elif self.operation == 'execute':
+            return parse_json_post_execute
+        else:
+            raise InvalidParameterValue(
+                'Unknown request {}'.format(self.operation), 'request')
+
     def set_version(self, version):
         self.version = version
         self.xpath_ns = get_xpath_ns(version)
@@ -287,13 +392,16 @@ class WPSRequest(object):
             raise VersionNegotiationFailed(
                 'The requested version "{}" is not supported by this server'.format(acceptedversions), 'version')
 
-    def check_and_set_version(self, version):
+    def check_and_set_version(self, version, allow_default=True):
         """set this.version
         """
 
         if not version:
-            raise MissingParameterValue('Missing version', 'version')
-        elif not _check_version(version):
+            if allow_default:
+                version = default_version
+            else:
+                raise MissingParameterValue('Missing version', 'version')
+        if not _check_version(version):
             raise VersionNegotiationFailed(
                 'The requested version "{}" is not supported by this server'.format(version), 'version')
         else:
@@ -332,6 +440,8 @@ class WPSRequest(object):
         obj = {
             'operation': self.operation,
             'version': self.version,
+            'api': self.api,
+            'default_mimetype': self.default_mimetype,
             'language': self.language,
             'identifier': self.identifier,
             'identifiers': self.identifiers,
@@ -352,28 +462,32 @@ class WPSRequest(object):
         :param value: the json (not string) representation
         """
 
-        self.operation = value['operation']
-        self.version = value['version']
-        self.language = value['language']
-        self.identifier = value['identifier']
-        self.identifiers = value['identifiers']
-        self.store_execute = value['store_execute']
-        self.status = value['status']
-        self.lineage = value['lineage']
-        self.outputs = value['outputs']
-        self.raw = value['raw']
+        self.operation = value.get('operation')
+        self.version = value.get('version')
+        self.api = value.get('api')
+        self.default_mimetype = value.get('default_mimetype')
+        self.language = value.get('language')
+        self.identifier = value.get('identifier')
+        self.identifiers = value.get('identifiers')
+        self.store_execute = value.get('store_execute')
+        self.status = value.get('status', False)
+        self.lineage = value.get('lineage', False)
+        self.outputs = value.get('outputs')
+        self.raw = value.get('raw', False)
         self.inputs = {}
 
-        for identifier in value['inputs']:
+        for identifier in value.get('inputs', []):
             inpt_defs = value['inputs'][identifier]
-
+            if not isinstance(inpt_defs, (list, tuple)):
+                inpt_defs = [inpt_defs]
+            self.inputs[identifier] = []
             for inpt_def in inpt_defs:
+                if not isinstance(inpt_def, dict):
+                    inpt_def = {"data": inpt_def}
+                if 'identifier' not in inpt_def:
+                    inpt_def['identifier'] = identifier
                 inpt = input_from_json(inpt_def)
-
-                if identifier in self.inputs:
-                    self.inputs[identifier].append(inpt)
-                else:
-                    self.inputs[identifier] = [inpt]
+                self.inputs[identifier].append(inpt)
 
 
 def get_inputs_from_xml(doc):
@@ -400,13 +514,11 @@ def get_inputs_from_xml(doc):
 
         complex_data = xpath_ns(input_el, './wps:Data/wps:ComplexData')
         if complex_data:
-
             complex_data_el = complex_data[0]
             inpt = {}
             inpt['identifier'] = identifier_el.text
-            inpt['mimeType'] = complex_data_el.attrib.get('mimeType', '')
-            inpt['encoding'] = complex_data_el.attrib.get(
-                'encoding', '').lower()
+            inpt['mimeType'] = complex_data_el.attrib.get('mimeType', None)
+            inpt['encoding'] = complex_data_el.attrib.get('encoding', '').lower()
             inpt['schema'] = complex_data_el.attrib.get('schema', '')
             inpt['method'] = complex_data_el.attrib.get('method', 'GET')
             if len(complex_data_el.getchildren()) > 0:
@@ -426,7 +538,7 @@ def get_inputs_from_xml(doc):
             inpt[identifier_el.text] = reference_data_el.text
             inpt['href'] = reference_data_el.attrib.get(
                 '{http://www.w3.org/1999/xlink}href', '')
-            inpt['mimeType'] = reference_data_el.attrib.get('mimeType', '')
+            inpt['mimeType'] = reference_data_el.attrib.get('mimeType', None)
             inpt['method'] = reference_data_el.attrib.get('method', 'GET')
             header_element = xpath_ns(reference_data_el, './wps:Header')
             if header_element:
@@ -470,7 +582,7 @@ def get_output_from_xml(doc):
             [identifier_el] = xpath_ns(output_el, './ows:Identifier')
             outpt = {}
             outpt[identifier_el.text] = ''
-            outpt['mimetype'] = output_el.attrib.get('mimeType', '')
+            outpt['mimetype'] = output_el.attrib.get('mimeType', None)
             outpt['encoding'] = output_el.attrib.get('encoding', '')
             outpt['schema'] = output_el.attrib.get('schema', '')
             outpt['uom'] = output_el.attrib.get('uom', '')
@@ -482,13 +594,99 @@ def get_output_from_xml(doc):
             [identifier_el] = xpath_ns(output_el, './ows:Identifier')
             outpt = {}
             outpt[identifier_el.text] = ''
-            outpt['mimetype'] = output_el.attrib.get('mimeType', '')
+            outpt['mimetype'] = output_el.attrib.get('mimeType', None)
             outpt['encoding'] = output_el.attrib.get('encoding', '')
             outpt['schema'] = output_el.attrib.get('schema', '')
             outpt['uom'] = output_el.attrib.get('uom', '')
             the_output[identifier_el.text] = outpt
 
     return the_output
+
+
+def get_inputs_from_json(jdoc):
+    the_inputs = {}
+    inputs_dict = jdoc.get('inputs', {})
+    for identifier, inpt_defs in inputs_dict.items():
+        if not isinstance(inpt_defs, (list, tuple)):
+            inpt_defs = [inpt_defs]
+        the_inputs[identifier] = []
+        for inpt_def in inpt_defs:
+            if not isinstance(inpt_def, dict):
+                inpt_def = {"data": inpt_def}
+            data_type = inpt_def.get('type', 'literal')
+            if data_type == 'literal':
+                inpt = {}
+                inpt['identifier'] = identifier
+                inpt['data'] = inpt_def.get('data')
+                inpt['uom'] = inpt_def.get('uom', '')
+                inpt['datatype'] = inpt_def.get('datatype', '')
+                the_inputs[identifier].append(inpt)
+                continue
+
+            if data_type == 'complex':
+                inpt = {}
+                inpt['identifier'] = identifier
+                inpt['mimeType'] = inpt_def.get('mimeType', None)
+                inpt['encoding'] = inpt_def.get('encoding', '').lower()
+                inpt['schema'] = inpt_def.get('schema', '')
+                inpt['method'] = inpt_def.get('method', 'GET')
+                # if len(complex_data_el.getchildren()) > 0:
+                #     value_el = complex_data_el[0]
+                #     inpt['data'] = _get_dataelement_value(value_el)
+                # else:
+                if True:
+                    inpt['data'] = _get_rawvalue_value(inpt_def, inpt['encoding'])
+                the_inputs[identifier].append(inpt)
+                continue
+
+            if data_type == 'reference':
+                inpt = {}
+                inpt['identifier'] = identifier
+                inpt[identifier] = inpt_def
+                inpt['href'] = inpt_def.get('href', '')
+                inpt['mimeType'] = inpt_def.get('mimeType', None)
+                inpt['method'] = inpt_def.get('method', 'GET')
+                inpt['header'] = inpt_def.get('header', '')
+                inpt['body'] = inpt_def.get('body', '')
+                inpt['bodyreference'] = inpt_def.get('bodyreference', '')
+                the_inputs[identifier].append(inpt)
+                continue
+
+            if data_type == 'bbox':
+                # Using OWSlib BoundingBox
+                from owslib.ows import BoundingBox
+                bbox_datas = inpt_def
+                for bbox_data in bbox_datas:
+                    bbox_data_el = bbox_data
+                    bbox = BoundingBox(bbox_data_el)
+                    the_inputs[identifier].append(bbox)
+                    LOGGER.debug("parse bbox: {},{},{},{}".format(bbox.minx, bbox.miny, bbox.maxx, bbox.maxy))
+    return the_inputs
+
+
+def get_output_from_dict(output_ids, raw):
+    the_output = {}
+    if isinstance(output_ids, dict):
+        pass
+    elif isinstance(output_ids, (tuple, list)):
+        output_ids = {x: {} for x in output_ids}
+    else:
+        output_ids = {output_ids: {}}
+        raw = True  # single non-dict output means raw output
+    for identifier, output_el in output_ids.items():
+        if isinstance(output_el, list):
+            output_el = output_el[0]
+        outpt = {}
+        outpt[identifier] = ''
+        outpt['mimetype'] = output_el.get('mimeType', None)
+        outpt['encoding'] = output_el.get('encoding', '')
+        outpt['schema'] = output_el.get('schema', '')
+        outpt['uom'] = output_el.get('uom', '')
+        if not raw:
+            outpt['asReference'] = output_el.get('asReference', 'false')
+        the_output[identifier] = outpt
+
+    return raw, the_output
 
 
 def get_data_from_kvp(data, part=None):

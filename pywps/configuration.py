@@ -24,8 +24,10 @@ RAW_OPTIONS = [('logging', 'format'), ]
 CONFIG = None
 LOGGER = logging.getLogger("PYWPS")
 
+wps_strict = True
 
-def get_config_value(section, option):
+
+def get_config_value(section, option, default_value=''):
     """Get desired value from  configuration files
 
     :param section: section in configuration files
@@ -38,7 +40,7 @@ def get_config_value(section, option):
     if not CONFIG:
         load_configuration()
 
-    value = ''
+    value = default_value
 
     if CONFIG.has_section(section):
         if CONFIG.has_option(section, option):
