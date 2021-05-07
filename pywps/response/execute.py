@@ -14,6 +14,7 @@ from werkzeug.wrappers import Response
 from pywps.response.status import WPS_STATUS
 from pywps.response import WPSResponse
 from pywps.inout.formats import FORMATS
+from pywps.inout.outputs import ComplexOutput
 
 import urllib.parse as urlparse
 from urllib.parse import urlencode
@@ -202,8 +203,13 @@ class ExecuteResponse(WPSResponse):
                 wps_output_value = self.outputs[wps_output_identifier]
                 if wps_output_value.source_type is None:
                     return NoApplicableCode("Expected output was not generated")
+                suffix = ''
+                if isinstance(wps_output_value, ComplexOutput):
+                    if wps_output_value.data_format.extension is not None:
+                        suffix = wps_output_value.data_format.extension
                 return Response(wps_output_value.data,
-                                mimetype=wps_output_value.data_format.mime_type)
+                                mimetype=wps_output_value.data_format.mime_type,
+                                headers={'Content-Disposition': 'attachment; filename="{}"'.format(wps_output_identifier+suffix)})
         else:
             if not self.doc:
                 return NoApplicableCode("Output was not generated")
